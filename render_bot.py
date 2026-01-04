@@ -47,7 +47,7 @@ class RenderVideoBot:
         self.max_file_size = 50 * 1024 * 1024  # 50 МБ
         self.temp_dir = Path(tempfile.mkdtemp())
         
-        # Настройки yt-dlp
+        # Настройки yt-dlp с обходом блокировок
         self.ydl_opts = {
             'outtmpl': str(self.temp_dir / '%(title)s.%(ext)s'),
             'format': 'best[height<=720]/best',
@@ -59,6 +59,17 @@ class RenderVideoBot:
             'no_warnings': True,
             'extractflat': False,
             'noplaylist': True,
+            # Обход блокировок YouTube
+            'geo_bypass': True,
+            'geo_bypass_country': 'US',
+            'extractor_retries': 3,
+            'fragment_retries': 3,
+            'retries': 3,
+            'sleep_interval': 1,
+            'max_sleep_interval': 5,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
         }
         
         # Регистрируем обработчики
@@ -70,6 +81,7 @@ class RenderVideoBot:
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("download", self.download_command))
         self.application.add_handler(CommandHandler("ping", self.ping_command))
+        self.application.add_handler(CommandHandler("check", self.check_command))
         
         # Обработка ссылок
         self.application.add_handler(
@@ -89,6 +101,7 @@ class RenderVideoBot:
 📱 Команды:
 /help - справка
 /download <ссылка> - скачать видео
+/check <ссылка> - проверить видео
 /ping - проверка работы
 
 🚀 Просто отправь ссылку на видео!
@@ -104,6 +117,7 @@ class RenderVideoBot:
 • /start - начать работу
 • /help - эта справка
 • /download <ссылка> - скачать видео
+• /check <ссылка> - проверить видео (без скачивания)
 • /ping - проверка работы
 
 🔗 Поддерживаемые платформы:
@@ -132,6 +146,93 @@ class RenderVideoBot:
             f"📡 Сервер: Онлайн\n"
             f"⚡ Статус: Готов к работе"
         )
+    
+    async def check_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /check - проверка видео без скачивания"""
+        if not context.args:
+            await update.message.reply_text(
+                "❌ Укажите ссылку для проверки!\nПример: /check https://youtu.be/dQw4w9WgXcQ"
+            )
+            return
+        
+        url = context.args[0]
+        status_message = await update.message.reply_text("🔍 Проверяю видео...")
+        
+        try:
+            clean_url = url.split('?')[0] if '?' in url else url
+            video_info = self.get_video_info(clean_url)
+            
+            if not video_info:
+                await status_message.edit_text("❌ Не удалось получить информацию о видео")
+                return
+            
+            if isinstance(video_info, dict) and 'error_type' in video_info:
+                error_type = video_info['error_type']
+                
+                if error_type == 'age_restricted':
+                    await status_message.edit_text(
+                        "🔞 **ВОЗРАСТНЫЕ ОГРАНИЧЕНИЯ**\n\n"
+                        "❌ Это видео нельзя скачать через бота\n"
+                        "YouTube требует авторизацию для 18+ контента"
+                    )
+                elif error_type == 'live_content':
+                    await status_message.edit_text(
+                        "📺 **СТРИМ/ПРЯМОЙ ЭФИР**\n\n"
+                        "⚠️ Сложности со скачиванием стримов\n"
+                        "Попробуйте после окончания эфира"
+                    )
+                else:
+                    await status_message.edit_text(f"❌ Проблема: {error_type}")
+                return
+            
+            # Показываем детальную информацию
+            title = video_info.get('title', 'Неизвестно')
+            uploader = video_info.get('uploader', 'Неизвестный канал')
+            duration = video_info.get('duration', 0)
+            file_size = video_info.get('file_size', 0)
+            age_restricted = video_info.get('age_restricted', False)
+            is_live = video_info.get('is_live', False)
+            was_live = video_info.get('was_live', False)
+            
+            duration_str = f"{duration//60}:{duration%60:02d}" if duration else "неизвестно"
+            size_str = f"{file_size/(1024*1024):.1f} МБ" if file_size else "неизвестно"
+            
+            # Определяем возможность скачивания
+            can_download = True
+            issues = []
+            
+            if age_restricted:
+                can_download = False
+                issues.append("🔞 Возрастные ограничения")
+            
+            if is_live:
+                can_download = False
+                issues.append("🔴 Прямой эфир")
+            
+            if was_live:
+                issues.append("📺 Сохраненный стрим")
+            
+            if file_size > self.max_file_size:
+                can_download = False
+                issues.append(f"📏 Слишком большой ({size_str})")
+            
+            status_icon = "✅" if can_download else "❌"
+            status_text = "Можно скачать" if can_download else "Нельзя скачать"
+            
+            issues_text = f"\n⚠️ Проблемы: {', '.join(issues)}" if issues else ""
+            
+            await status_message.edit_text(
+                f"🔍 **ПРОВЕРКА ВИДЕО**\n\n"
+                f"📹 **{title}**\n"
+                f"📺 Канал: {uploader}\n"
+                f"⏱️ Длительность: {duration_str}\n"
+                f"📏 Размер: {size_str}\n\n"
+                f"{status_icon} **{status_text}**{issues_text}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Ошибка проверки: {e}")
+            await status_message.edit_text(f"❌ Ошибка проверки: {str(e)[:100]}...")
     
     async def download_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /download"""
@@ -191,17 +292,70 @@ class RenderVideoBot:
                     )
                     return
             
+            # Проверяем на специальные ошибки
+            if isinstance(video_info, dict) and 'error_type' in video_info:
+                error_type = video_info['error_type']
+                
+                if error_type == 'age_restricted':
+                    await status_message.edit_text(
+                        "🔞 **Видео имеет возрастные ограничения**\n\n"
+                        "❌ YouTube требует авторизацию для просмотра\n"
+                        "🤖 Бот не может пройти проверку возраста\n\n"
+                        "💡 **Решения:**\n"
+                        "• Найдите версию без ограничений\n"
+                        "• Используйте другой источник\n"
+                        "• Скачайте через браузер с авторизацией"
+                    )
+                elif error_type == 'live_content':
+                    await status_message.edit_text(
+                        "📺 **Проблема с прямым эфиром/стримом**\n\n"
+                        "❌ Стримы и премьеры сложно скачивать\n"
+                        "🤖 Требуется специальная обработка\n\n"
+                        "💡 **Попробуйте:**\n"
+                        "• Дождитесь окончания стрима\n"
+                        "• Найдите обычную запись\n"
+                        "• Используйте другое видео"
+                    )
+                elif error_type == 'geo_blocked':
+                    await status_message.edit_text(
+                        "🌍 **Географические ограничения**\n\n"
+                        "❌ Видео недоступно в вашем регионе\n"
+                        "🤖 Сервер находится в другой стране\n\n"
+                        "💡 **Попробуйте другое видео**"
+                    )
+                elif error_type == 'unavailable':
+                    await status_message.edit_text(
+                        "📹 **Видео недоступно**\n\n"
+                        "❌ Видео приватное, удалено или заблокировано\n\n"
+                        "💡 **Попробуйте другое видео**"
+                    )
+                return
+            
             # Показываем информацию о видео
             title = video_info.get('title', 'Неизвестно')
             duration = video_info.get('duration', 0)
             uploader = video_info.get('uploader', 'Неизвестный канал')
+            age_restricted = video_info.get('age_restricted', False)
+            is_live = video_info.get('is_live', False)
+            was_live = video_info.get('was_live', False)
             
             duration_str = f"{duration//60}:{duration%60:02d}" if duration else "неизвестно"
+            
+            # Добавляем предупреждения
+            warnings = []
+            if age_restricted:
+                warnings.append("🔞 Возрастные ограничения")
+            if is_live:
+                warnings.append("🔴 Прямой эфир")
+            if was_live:
+                warnings.append("📺 Сохраненный стрим")
+            
+            warning_text = f"\n⚠️ {', '.join(warnings)}" if warnings else ""
             
             await status_message.edit_text(
                 f"📹 **{title}**\n"
                 f"📺 Канал: {uploader}\n"
-                f"⏱️ Длительность: {duration_str}\n\n"
+                f"⏱️ Длительность: {duration_str}{warning_text}\n\n"
                 f"🔄 Проверяю размер..."
             )
             
@@ -295,16 +449,24 @@ class RenderVideoBot:
     def get_video_info(self, url: str) -> Optional[Dict]:
         """Получение информации о видео"""
         try:
+            # Основные настройки
             ydl_opts = {
                 'quiet': True,
                 'no_warnings': True,
                 'extract_flat': False,
                 'skip_download': True,
                 'format': 'best[height<=720]/best',
+                'age_limit': 99,  # Игнорируем возрастные ограничения
+                'geo_bypass': True,  # Обход географических ограничений
             }
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
+                
+                # Проверяем на возрастные ограничения
+                age_restricted = info.get('age_limit', 0) > 0
+                is_live = info.get('is_live', False)
+                was_live = info.get('was_live', False)
                 
                 # Получаем размер файла более точно
                 formats = info.get('formats', [])
@@ -326,10 +488,25 @@ class RenderVideoBot:
                     'file_size': file_size,
                     'view_count': info.get('view_count', 0),
                     'upload_date': info.get('upload_date', ''),
+                    'age_restricted': age_restricted,
+                    'is_live': is_live,
+                    'was_live': was_live,
                 }
                 
         except Exception as e:
+            error_msg = str(e).lower()
             logger.error(f"Ошибка получения информации: {e}")
+            
+            # Анализируем ошибку
+            if any(keyword in error_msg for keyword in ['sign in', 'age', 'restricted', 'login']):
+                return {'error_type': 'age_restricted', 'error_msg': str(e)}
+            elif any(keyword in error_msg for keyword in ['live', 'stream', 'premiere']):
+                return {'error_type': 'live_content', 'error_msg': str(e)}
+            elif any(keyword in error_msg for keyword in ['private', 'unavailable', 'deleted']):
+                return {'error_type': 'unavailable', 'error_msg': str(e)}
+            elif any(keyword in error_msg for keyword in ['region', 'country', 'location']):
+                return {'error_type': 'geo_blocked', 'error_msg': str(e)}
+            
             return None
     
     async def _download_audio_only(self, url: str) -> Optional[Dict]:
