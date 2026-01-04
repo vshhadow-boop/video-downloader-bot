@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Telegram бот для Render с webhook
+Простая рабочая версия бота для Render
 """
 
 import os
@@ -30,15 +30,8 @@ logger = logging.getLogger(__name__)
 # Flask приложение для webhook
 app = Flask(__name__)
 
-class RenderVideoBot:
+class SimpleVideoBot:
     def __init__(self, token: str, webhook_url: str):
-        """
-        Инициализация бота для Render
-        
-        Args:
-            token: Токен бота от BotFather
-            webhook_url: URL для webhook
-        """
         self.token = token
         self.webhook_url = webhook_url
         self.application = Application.builder().token(token).build()
@@ -59,17 +52,10 @@ class RenderVideoBot:
             'no_warnings': True,
             'extractflat': False,
             'noplaylist': True,
-            # Обход блокировок YouTube
             'geo_bypass': True,
             'geo_bypass_country': 'US',
-            'extractor_retries': 3,
-            'fragment_retries': 3,
-            'retries': 3,
-            'sleep_interval': 1,
-            'max_sleep_interval': 5,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
+            'extractor_retries': 2,
+            'retries': 2,
         }
         
         # Регистрируем обработчики
@@ -81,7 +67,6 @@ class RenderVideoBot:
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("download", self.download_command))
         self.application.add_handler(CommandHandler("ping", self.ping_command))
-        self.application.add_handler(CommandHandler("check", self.check_command))
         self.application.add_handler(CommandHandler("status", self.status_command))
         
         # Обработка ссылок
@@ -102,7 +87,6 @@ class RenderVideoBot:
 📱 Команды:
 /help - справка
 /download <ссылка> - скачать видео
-/check <ссылка> - проверить видео
 /status - проверить YouTube
 /ping - проверка работы
 
@@ -119,7 +103,6 @@ class RenderVideoBot:
 • /start - начать работу
 • /help - эта справка
 • /download <ссылка> - скачать видео
-• /check <ссылка> - проверить видео (без скачивания)
 • /status - проверить доступность YouTube
 • /ping - проверка работы
 
@@ -151,134 +134,52 @@ class RenderVideoBot:
         )
     
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /status - проверка доступности YouTube"""
-        status_message = await update.message.reply_text("🔍 Проверяю доступность YouTube...")
+        """Команда /status - проверка YouTube"""
+        status_message = await update.message.reply_text("🔍 Проверяю YouTube...")
         
         try:
             # Тестируем на популярном видео
-            test_url = "https://youtu.be/dQw4w9WgXcQ"  # Rick Roll - всегда доступно
+            test_url = "https://youtu.be/dQw4w9WgXcQ"
             
-            test_info = self.get_video_info(test_url)
+            opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': True,
+                'skip_download': True,
+                'geo_bypass': True,
+            }
             
-            if test_info and 'error_type' not in test_info:
-                attempt = test_info.get('attempt', 1)
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(test_url, download=False)
+                
+                if info:
+                    await status_message.edit_text(
+                        "✅ **YouTube доступен**\n\n"
+                        "🌍 Сервер Render может скачивать\n"
+                        "⚡ Статус: Готов к работе\n\n"
+                        "💡 Можете пробовать скачивать видео!"
+                    )
+                else:
+                    await status_message.edit_text(
+                        "⚠️ **Проблемы с YouTube**\n\n"
+                        "❌ Не удалось подключиться\n"
+                        "💡 Попробуйте позже"
+                    )
+                    
+        except Exception as e:
+            error_msg = str(e)
+            if '429' in error_msg or 'Too Many Requests' in error_msg:
                 await status_message.edit_text(
-                    f"✅ **YouTube доступен**\n\n"
-                    f"🔄 Успешно с попытки: {attempt}\n"
-                    f"🌍 Сервер Render может скачивать\n"
-                    f"⚡ Статус: Готов к работе\n\n"
-                    f"💡 Можете пробовать скачивать видео!"
-                )
-            elif test_info and test_info.get('error_type') == 'rate_limited':
-                await status_message.edit_text(
-                    f"🚫 **YouTube блокирует Render**\n\n"
-                    f"❌ Ошибка 429: Слишком много запросов\n"
-                    f"⏰ Блокировка временная\n\n"
-                    f"💡 **Попробуйте:**\n"
-                    f"• Подождать 10-15 минут\n"
-                    f"• Использовать локальные программы"
+                    "🚫 **YouTube блокирует Render**\n\n"
+                    "❌ Ошибка 429: Слишком много запросов\n"
+                    "⏰ Блокировка временная\n\n"
+                    "💡 Попробуйте через 10-15 минут"
                 )
             else:
                 await status_message.edit_text(
-                    f"⚠️ **Проблемы с YouTube**\n\n"
-                    f"❌ Не удалось подключиться\n"
-                    f"🔧 Возможны технические работы\n\n"
-                    f"💡 Попробуйте позже"
+                    f"❌ **Ошибка проверки**\n\n"
+                    f"Детали: {error_msg[:100]}..."
                 )
-                
-        except Exception as e:
-            logger.error(f"Ошибка проверки статуса: {e}")
-            await status_message.edit_text(
-                f"❌ **Ошибка проверки**\n\n"
-                f"Детали: {str(e)[:100]}..."
-            )
-    
-    async def check_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /check - проверка видео без скачивания"""
-        if not context.args:
-            await update.message.reply_text(
-                "❌ Укажите ссылку для проверки!\nПример: /check https://youtu.be/dQw4w9WgXcQ"
-            )
-            return
-        
-        url = context.args[0]
-        status_message = await update.message.reply_text("🔍 Проверяю видео...")
-        
-        try:
-            clean_url = url.split('?')[0] if '?' in url else url
-            video_info = self.get_video_info(clean_url)
-            
-            if not video_info:
-                await status_message.edit_text("❌ Не удалось получить информацию о видео")
-                return
-            
-            if isinstance(video_info, dict) and 'error_type' in video_info:
-                error_type = video_info['error_type']
-                
-                if error_type == 'age_restricted':
-                    await status_message.edit_text(
-                        "🔞 **ВОЗРАСТНЫЕ ОГРАНИЧЕНИЯ**\n\n"
-                        "❌ Это видео нельзя скачать через бота\n"
-                        "YouTube требует авторизацию для 18+ контента"
-                    )
-                elif error_type == 'live_content':
-                    await status_message.edit_text(
-                        "📺 **СТРИМ/ПРЯМОЙ ЭФИР**\n\n"
-                        "⚠️ Сложности со скачиванием стримов\n"
-                        "Попробуйте после окончания эфира"
-                    )
-                else:
-                    await status_message.edit_text(f"❌ Проблема: {error_type}")
-                return
-            
-            # Показываем детальную информацию
-            title = video_info.get('title', 'Неизвестно')
-            uploader = video_info.get('uploader', 'Неизвестный канал')
-            duration = video_info.get('duration', 0)
-            file_size = video_info.get('file_size', 0)
-            age_restricted = video_info.get('age_restricted', False)
-            is_live = video_info.get('is_live', False)
-            was_live = video_info.get('was_live', False)
-            
-            duration_str = f"{duration//60}:{duration%60:02d}" if duration else "неизвестно"
-            size_str = f"{file_size/(1024*1024):.1f} МБ" if file_size else "неизвестно"
-            
-            # Определяем возможность скачивания
-            can_download = True
-            issues = []
-            
-            if age_restricted:
-                can_download = False
-                issues.append("🔞 Возрастные ограничения")
-            
-            if is_live:
-                can_download = False
-                issues.append("🔴 Прямой эфир")
-            
-            if was_live:
-                issues.append("📺 Сохраненный стрим")
-            
-            if file_size > self.max_file_size:
-                can_download = False
-                issues.append(f"📏 Слишком большой ({size_str})")
-            
-            status_icon = "✅" if can_download else "❌"
-            status_text = "Можно скачать" if can_download else "Нельзя скачать"
-            
-            issues_text = f"\n⚠️ Проблемы: {', '.join(issues)}" if issues else ""
-            
-            await status_message.edit_text(
-                f"🔍 **ПРОВЕРКА ВИДЕО**\n\n"
-                f"📹 **{title}**\n"
-                f"📺 Канал: {uploader}\n"
-                f"⏱️ Длительность: {duration_str}\n"
-                f"📏 Размер: {size_str}\n\n"
-                f"{status_icon} **{status_text}**{issues_text}"
-            )
-            
-        except Exception as e:
-            logger.error(f"Ошибка проверки: {e}")
-            await status_message.edit_text(f"❌ Ошибка проверки: {str(e)[:100]}...")
     
     async def download_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /download"""
@@ -310,205 +211,59 @@ class RenderVideoBot:
         status_message = await update.message.reply_text("🔄 Обрабатываю...")
         
         try:
-            # Очищаем URL от параметров
+            # Очищаем URL
             clean_url = url.split('?')[0] if '?' in url else url
             
             # Получаем информацию
             video_info = self.get_video_info(clean_url)
             
             if not video_info:
-                # Пробуем альтернативные методы
-                await status_message.edit_text("🔄 Пробую альтернативный метод...")
-                
-                video_info = await self._try_alternative_extraction(clean_url)
-                
-                if not video_info:
-                    await status_message.edit_text(
-                        "❌ Не удалось получить информацию\n\n"
-                        "🔍 **Возможные причины:**\n"
-                        "• Региональные ограничения\n"
-                        "• Возрастные ограничения (18+)\n"
-                        "• Блокировка скачивания автором\n"
-                        "• Приватное/удаленное видео\n"
-                        "• Проблемы с сервером YouTube\n\n"
-                        "💡 **Попробуйте:**\n"
-                        "• Другое видео с того же канала\n"
-                        "• Видео без возрастных ограничений\n"
-                        "• Публичные видео"
-                    )
-                    return
-            
-            # Проверяем на специальные ошибки
-            if isinstance(video_info, dict) and 'error_type' in video_info:
-                error_type = video_info['error_type']
-                
-                if error_type == 'rate_limited':
-                    await status_message.edit_text(
-                        "🚫 **YouTube блокирует сервер Render**\n\n"
-                        "❌ Ошибка 429: Слишком много запросов\n"
-                        "🤖 Render использует общие IP-адреса\n\n"
-                        "💡 **Решения:**\n"
-                        "• Попробуйте через 10-15 минут\n"
-                        "• Используйте другой хостинг\n"
-                        "• Скачайте локально через программу"
-                    )
-                elif error_type == 'age_restricted':
-                    await status_message.edit_text(
-                        "🔞 **Видео имеет возрастные ограничения**\n\n"
-                        "❌ YouTube требует авторизацию для просмотра\n"
-                        "🤖 Бот не может пройти проверку возраста\n\n"
-                        "💡 **Решения:**\n"
-                        "• Найдите версию без ограничений\n"
-                        "• Используйте другой источник\n"
-                        "• Скачайте через браузер с авторизацией"
-                    )
-                elif error_type == 'live_content':
-                    await status_message.edit_text(
-                        "📺 **Проблема с прямым эфиром/стримом**\n\n"
-                        "❌ Стримы и премьеры сложно скачивать\n"
-                        "🤖 Требуется специальная обработка\n\n"
-                        "💡 **Попробуйте:**\n"
-                        "• Дождитесь окончания стрима\n"
-                        "• Найдите обычную запись\n"
-                        "• Используйте другое видео"
-                    )
-                elif error_type == 'geo_blocked':
-                    await status_message.edit_text(
-                        "🌍 **Географические ограничения**\n\n"
-                        "❌ Видео недоступно в вашем регионе\n"
-                        "🤖 Сервер находится в другой стране\n\n"
-                        "💡 **Попробуйте другое видео**"
-                    )
-                elif error_type == 'unavailable':
-                    await status_message.edit_text(
-                        "📹 **Видео недоступно**\n\n"
-                        "❌ Видео приватное, удалено или заблокировано\n\n"
-                        "💡 **Попробуйте другое видео**"
-                    )
-                return
-            
-            # Показываем информацию о видео
-            title = video_info.get('title', 'Неизвестно')
-            duration = video_info.get('duration', 0)
-            uploader = video_info.get('uploader', 'Неизвестный канал')
-            age_restricted = video_info.get('age_restricted', False)
-            is_live = video_info.get('is_live', False)
-            was_live = video_info.get('was_live', False)
-            
-            duration_str = f"{duration//60}:{duration%60:02d}" if duration else "неизвестно"
-            
-            # Добавляем предупреждения
-            warnings = []
-            if age_restricted:
-                warnings.append("🔞 Возрастные ограничения")
-            if is_live:
-                warnings.append("🔴 Прямой эфир")
-            if was_live:
-                warnings.append("📺 Сохраненный стрим")
-            
-            warning_text = f"\n⚠️ {', '.join(warnings)}" if warnings else ""
-            
-            await status_message.edit_text(
-                f"📹 **{title}**\n"
-                f"📺 Канал: {uploader}\n"
-                f"⏱️ Длительность: {duration_str}{warning_text}\n\n"
-                f"🔄 Проверяю размер..."
-            )
-            
-            # Проверяем размер
-            file_size = video_info.get('file_size', 0)
-            if file_size > self.max_file_size:
-                size_mb = file_size / (1024*1024)
                 await status_message.edit_text(
-                    f"❌ Файл слишком большой ({size_mb:.1f} МБ)\n"
-                    f"Максимум: {self.max_file_size/(1024*1024):.0f} МБ\n\n"
-                    f"📹 **{title}**\n"
-                    f"📺 Канал: {uploader}"
+                    "❌ Не удалось получить информацию\n\n"
+                    "🔍 **Возможные причины:**\n"
+                    "• YouTube блокирует сервер (429)\n"
+                    "• Возрастные ограничения (18+)\n"
+                    "• Приватное/удаленное видео\n"
+                    "• Региональные ограничения\n\n"
+                    "💡 Попробуйте команду /status"
                 )
                 return
             
-            # Скачиваем
+            # Показываем информацию
+            title = video_info.get('title', 'Неизвестно')
+            uploader = video_info.get('uploader', 'Неизвестный канал')
+            duration = video_info.get('duration', 0)
+            
+            duration_str = f"{duration//60}:{duration%60:02d}" if duration else "неизвестно"
+            
             await status_message.edit_text(
-                f"⬇️ Скачиваю...\n\n"
                 f"📹 **{title}**\n"
                 f"📺 Канал: {uploader}\n"
-                f"⏱️ Длительность: {duration_str}"
+                f"⏱️ Длительность: {duration_str}\n\n"
+                f"⬇️ Скачиваю..."
             )
             
+            # Скачиваем
             result = await self._download_video(clean_url)
             
             if result and 'video' in result['files']:
                 await self._send_video(update, result, status_message)
             else:
-                # Пробуем скачать только аудио
                 await status_message.edit_text(
-                    f"🎵 Пробую скачать только аудио...\n\n"
-                    f"� **{ti:tle}**\n"
-                    f"📺 Канал: {uploader}"
+                    f"❌ Не удалось скачать\n\n"
+                    f"📹 **{title}**\n"
+                    f"📺 Канал: {uploader}\n\n"
+                    f"💡 Попробуйте /status для диагностики"
                 )
-                
-                audio_result = await self._download_audio_only(clean_url)
-                
-                if audio_result and 'audio' in audio_result['files']:
-                    await self._send_audio(update, audio_result, status_message)
-                else:
-                    await status_message.edit_text(
-                        f"❌ Не удалось скачать\n\n"
-                        f"📹 **{title}**\n"
-                        f"📺 Канал: {uploader}\n\n"
-                        f"🔒 **Видео защищено от скачивания**\n"
-                        f"Автор канала заблокировал загрузку"
-                    )
                 
         except Exception as e:
             logger.error(f"Ошибка обработки: {e}")
-            error_msg = str(e)
-            if "age-gated" in error_msg.lower():
-                await status_message.edit_text("❌ Видео имеет возрастные ограничения")
-            elif "private" in error_msg.lower():
-                await status_message.edit_text("❌ Видео приватное или удалено")
-            elif "region" in error_msg.lower():
-                await status_message.edit_text("❌ Видео недоступно в вашем регионе")
-            else:
-                await status_message.edit_text(f"❌ Ошибка: {error_msg[:100]}...")
-    
-    async def _try_alternative_extraction(self, url: str) -> Optional[Dict]:
-        """Альтернативный метод извлечения информации"""
-        try:
-            # Пробуем с другими настройками
-            alt_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': False,
-                'skip_download': True,
-                'format': 'worst[height<=480]/worst',  # Пробуем худшее качество
-                'age_limit': 99,  # Игнорируем возрастные ограничения
-                'geo_bypass': True,  # Обход географических ограничений
-            }
-            
-            with yt_dlp.YoutubeDL(alt_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                
-                return {
-                    'title': info.get('title', 'Неизвестно'),
-                    'uploader': info.get('uploader', 'Неизвестный канал'),
-                    'duration': info.get('duration', 0),
-                    'file_size': 0,  # Размер неизвестен
-                    'view_count': info.get('view_count', 0),
-                    'upload_date': info.get('upload_date', ''),
-                }
-                
-        except Exception as e:
-            logger.error(f"Альтернативное извлечение не удалось: {e}")
-            return None
+            await status_message.edit_text(f"❌ Ошибка: {str(e)[:100]}...")
     
     def get_video_info(self, url: str) -> Optional[Dict]:
-        """Получение информации о видео с обходом блокировок"""
-        
-        # Список разных настроек для обхода блокировок
-        attempts = [
-            # Попытка 1: Базовые настройки
-            {
+        """Получение информации о видео"""
+        try:
+            opts = {
                 'quiet': True,
                 'no_warnings': True,
                 'extract_flat': False,
@@ -516,153 +271,21 @@ class RenderVideoBot:
                 'format': 'best[height<=720]/best',
                 'geo_bypass': True,
                 'geo_bypass_country': 'US',
-            },
-            # Попытка 2: С другой страной
-            {
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': False,
-                'skip_download': True,
-                'format': 'worst[height<=480]/worst',
-                'geo_bypass': True,
-                'geo_bypass_country': 'GB',
-                'extractor_retries': 1,
-            },
-            # Попытка 3: Минимальные настройки
-            {
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': True,  # Только базовая информация
-                'skip_download': True,
-                'geo_bypass': True,
-            }
-        ]
-        
-        for i, opts in enumerate(attempts, 1):
-            try:
-                logger.info(f"Попытка {i} получения информации о видео")
-                
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    
-                    # Получаем размер файла
-                    formats = info.get('formats', [])
-                    file_size = 0
-                    
-                    for fmt in formats:
-                        if fmt.get('height', 0) <= 720:
-                            file_size = fmt.get('filesize') or fmt.get('filesize_approx', 0)
-                            if file_size:
-                                break
-                    
-                    if not file_size:
-                        file_size = info.get('filesize', 0) or info.get('filesize_approx', 0)
-                    
-                    logger.info(f"Успешно получена информация (попытка {i})")
-                    
-                    return {
-                        'title': info.get('title', 'Неизвестно'),
-                        'uploader': info.get('uploader', 'Неизвестный канал'),
-                        'duration': info.get('duration', 0),
-                        'file_size': file_size,
-                        'view_count': info.get('view_count', 0),
-                        'upload_date': info.get('upload_date', ''),
-                        'attempt': i
-                    }
-                    
-            except Exception as e:
-                error_msg = str(e).lower()
-                logger.warning(f"Попытка {i} не удалась: {e}")
-                
-                # Анализируем ошибку
-                if '429' in error_msg or 'too many requests' in error_msg:
-                    logger.error("YouTube блокирует запросы (429)")
-                    if i < len(attempts):
-                        continue  # Пробуем следующий метод
-                    return {'error_type': 'rate_limited', 'error_msg': str(e)}
-                
-                elif any(keyword in error_msg for keyword in ['sign in', 'age', 'restricted', 'login']):
-                    return {'error_type': 'age_restricted', 'error_msg': str(e)}
-                elif any(keyword in error_msg for keyword in ['live', 'stream', 'premiere']):
-                    return {'error_type': 'live_content', 'error_msg': str(e)}
-                elif any(keyword in error_msg for keyword in ['private', 'unavailable', 'deleted']):
-                    return {'error_type': 'unavailable', 'error_msg': str(e)}
-                elif any(keyword in error_msg for keyword in ['region', 'country', 'location']):
-                    return {'error_type': 'geo_blocked', 'error_msg': str(e)}
-        
-        logger.error("Все попытки получения информации не удались")
-        return None
-    
-    async def _download_audio_only(self, url: str) -> Optional[Dict]:
-        """Скачивание только аудио"""
-        try:
-            audio_opts = {
-                'outtmpl': str(self.temp_dir / '%(title)s.%(ext)s'),
-                'format': 'bestaudio/best',
-                'writeinfojson': False,
-                'writethumbnail': False,
-                'writesubtitles': False,
-                'writeautomaticsub': False,
-                'ignoreerrors': True,
-                'no_warnings': True,
-                'extractflat': False,
-                'noplaylist': True,
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
             }
             
-            with yt_dlp.YoutubeDL(audio_opts) as ydl:
+            with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
-                title = info.get('title', 'audio')
                 
-                # Скачиваем
-                ydl.download([url])
-                
-                # Ищем аудио файл
-                for ext in ['.mp3', '.m4a', '.webm', '.ogg']:
-                    audio_file = self.temp_dir / f"{title}{ext}"
-                    if audio_file.exists():
-                        return {
-                            'title': title,
-                            'info': info,
-                            'files': {'audio': str(audio_file)}
-                        }
-                
-                return None
+                return {
+                    'title': info.get('title', 'Неизвестно'),
+                    'uploader': info.get('uploader', 'Неизвестный канал'),
+                    'duration': info.get('duration', 0),
+                    'file_size': info.get('filesize', 0) or info.get('filesize_approx', 0)
+                }
                 
         except Exception as e:
-            logger.error(f"Ошибка скачивания аудио: {e}")
+            logger.error(f"Ошибка получения информации: {e}")
             return None
-    
-    async def _send_audio(self, update: Update, result: Dict, status_message):
-        """Отправка аудио"""
-        try:
-            await status_message.edit_text("📤 Отправляю аудио...")
-            
-            audio_path = result['files']['audio']
-            title = result['title']
-            
-            with open(audio_path, 'rb') as audio_file:
-                await update.message.reply_audio(
-                    audio=audio_file,
-                    caption=f"🎵 {title}",
-                    title=title
-                )
-            
-            await status_message.delete()
-            
-            # Очищаем файл
-            try:
-                Path(audio_path).unlink()
-            except:
-                pass
-                
-        except Exception as e:
-            logger.error(f"Ошибка отправки аудио: {e}")
-            await status_message.edit_text(f"❌ Ошибка отправки аудио: {str(e)}")
     
     async def _download_video(self, url: str) -> Optional[Dict]:
         """Скачивание видео"""
@@ -774,7 +397,7 @@ def index():
     """Главная страница"""
     return '''
     <h1>🤖 Telegram Video Bot</h1>
-    <p>Бот работает на Render!</p>
+    <p>Простая рабочая версия!</p>
     <p>Статус: <span style="color: green;">Онлайн</span></p>
     '''
 
@@ -799,7 +422,7 @@ async def main():
         return
     
     # Создаем бота
-    bot_instance = RenderVideoBot(token, webhook_url)
+    bot_instance = SimpleVideoBot(token, webhook_url)
     
     # Инициализируем приложение
     await bot_instance.application.initialize()
@@ -811,7 +434,7 @@ async def main():
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     
-    logger.info("🚀 Бот запущен на Render!")
+    logger.info("🚀 Простой бот запущен на Render!")
     
     # Держим приложение живым
     try:
