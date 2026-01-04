@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Простая рабочая версия бота для Render
+Рабочая версия Telegram бота для Render
 """
 
 import os
 import asyncio
 import logging
 import tempfile
-import shutil
 from pathlib import Path
 from typing import Optional, Dict
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from telegram.error import TelegramError
 
 import yt_dlp
 from flask import Flask, request
@@ -30,7 +28,7 @@ logger = logging.getLogger(__name__)
 # Flask приложение для webhook
 app = Flask(__name__)
 
-class SimpleVideoBot:
+class WorkingVideoBot:
     def __init__(self, token: str, webhook_url: str):
         self.token = token
         self.webhook_url = webhook_url
@@ -40,7 +38,7 @@ class SimpleVideoBot:
         self.max_file_size = 50 * 1024 * 1024  # 50 МБ
         self.temp_dir = Path(tempfile.mkdtemp())
         
-        # Настройки yt-dlp с обходом блокировок
+        # Простые настройки yt-dlp
         self.ydl_opts = {
             'outtmpl': str(self.temp_dir / '%(title)s.%(ext)s'),
             'format': 'best[height<=720]/best',
@@ -52,10 +50,6 @@ class SimpleVideoBot:
             'no_warnings': True,
             'extractflat': False,
             'noplaylist': True,
-            'geo_bypass': True,
-            'geo_bypass_country': 'US',
-            'extractor_retries': 2,
-            'retries': 2,
         }
         
         # Регистрируем обработчики
@@ -67,7 +61,6 @@ class SimpleVideoBot:
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("download", self.download_command))
         self.application.add_handler(CommandHandler("ping", self.ping_command))
-        self.application.add_handler(CommandHandler("status", self.status_command))
         
         # Обработка ссылок
         self.application.add_handler(
@@ -77,7 +70,7 @@ class SimpleVideoBot:
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start"""
         welcome_text = """
-🎬 Привет! Я бот для скачивания видео на Render!
+🎬 Привет! Я бот для скачивания видео!
 
 🌟 Возможности:
 • Скачивание с YouTube, VK, TikTok
@@ -87,7 +80,6 @@ class SimpleVideoBot:
 📱 Команды:
 /help - справка
 /download <ссылка> - скачать видео
-/status - проверить YouTube
 /ping - проверка работы
 
 🚀 Просто отправь ссылку на видео!
@@ -103,7 +95,6 @@ class SimpleVideoBot:
 • /start - начать работу
 • /help - эта справка
 • /download <ссылка> - скачать видео
-• /status - проверить доступность YouTube
 • /ping - проверка работы
 
 🔗 Поддерживаемые платформы:
@@ -132,54 +123,6 @@ class SimpleVideoBot:
             f"📡 Сервер: Онлайн\n"
             f"⚡ Статус: Готов к работе"
         )
-    
-    async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /status - проверка YouTube"""
-        status_message = await update.message.reply_text("🔍 Проверяю YouTube...")
-        
-        try:
-            # Тестируем на популярном видео
-            test_url = "https://youtu.be/dQw4w9WgXcQ"
-            
-            opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': True,
-                'skip_download': True,
-                'geo_bypass': True,
-            }
-            
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(test_url, download=False)
-                
-                if info:
-                    await status_message.edit_text(
-                        "✅ **YouTube доступен**\n\n"
-                        "🌍 Сервер Render может скачивать\n"
-                        "⚡ Статус: Готов к работе\n\n"
-                        "💡 Можете пробовать скачивать видео!"
-                    )
-                else:
-                    await status_message.edit_text(
-                        "⚠️ **Проблемы с YouTube**\n\n"
-                        "❌ Не удалось подключиться\n"
-                        "💡 Попробуйте позже"
-                    )
-                    
-        except Exception as e:
-            error_msg = str(e)
-            if '429' in error_msg or 'Too Many Requests' in error_msg:
-                await status_message.edit_text(
-                    "🚫 **YouTube блокирует Render**\n\n"
-                    "❌ Ошибка 429: Слишком много запросов\n"
-                    "⏰ Блокировка временная\n\n"
-                    "💡 Попробуйте через 10-15 минут"
-                )
-            else:
-                await status_message.edit_text(
-                    f"❌ **Ошибка проверки**\n\n"
-                    f"Детали: {error_msg[:100]}..."
-                )
     
     async def download_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /download"""
@@ -211,69 +154,41 @@ class SimpleVideoBot:
         status_message = await update.message.reply_text("🔄 Обрабатываю...")
         
         try:
-            # Очищаем URL
-            clean_url = url.split('?')[0] if '?' in url else url
-            
             # Получаем информацию
-            video_info = self.get_video_info(clean_url)
+            video_info = self.get_video_info(url)
             
             if not video_info:
+                await status_message.edit_text("❌ Не удалось получить информацию")
+                return
+            
+            # Проверяем размер
+            file_size = video_info.get('file_size', 0)
+            if file_size > self.max_file_size:
+                size_mb = file_size / (1024*1024)
                 await status_message.edit_text(
-                    "❌ Не удалось получить информацию\n\n"
-                    "🔍 **Возможные причины:**\n"
-                    "• YouTube блокирует сервер (429)\n"
-                    "• Возрастные ограничения (18+)\n"
-                    "• Приватное/удаленное видео\n"
-                    "• Региональные ограничения\n\n"
-                    "💡 Попробуйте команду /status"
+                    f"❌ Файл слишком большой ({size_mb:.1f} МБ)\n"
+                    f"Максимум: {self.max_file_size/(1024*1024):.0f} МБ"
                 )
                 return
             
-            # Показываем информацию
-            title = video_info.get('title', 'Неизвестно')
-            uploader = video_info.get('uploader', 'Неизвестный канал')
-            duration = video_info.get('duration', 0)
-            
-            duration_str = f"{duration//60}:{duration%60:02d}" if duration else "неизвестно"
-            
-            await status_message.edit_text(
-                f"📹 **{title}**\n"
-                f"📺 Канал: {uploader}\n"
-                f"⏱️ Длительность: {duration_str}\n\n"
-                f"⬇️ Скачиваю..."
-            )
-            
             # Скачиваем
-            result = await self._download_video(clean_url)
+            await status_message.edit_text("⬇️ Скачиваю...")
+            
+            result = await self._download_video(url)
             
             if result and 'video' in result['files']:
                 await self._send_video(update, result, status_message)
             else:
-                await status_message.edit_text(
-                    f"❌ Не удалось скачать\n\n"
-                    f"📹 **{title}**\n"
-                    f"📺 Канал: {uploader}\n\n"
-                    f"💡 Попробуйте /status для диагностики"
-                )
+                await status_message.edit_text("❌ Ошибка скачивания")
                 
         except Exception as e:
             logger.error(f"Ошибка обработки: {e}")
-            await status_message.edit_text(f"❌ Ошибка: {str(e)[:100]}...")
+            await status_message.edit_text(f"❌ Ошибка: {str(e)}")
     
     def get_video_info(self, url: str) -> Optional[Dict]:
         """Получение информации о видео"""
         try:
-            opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': False,
-                'skip_download': True,
-                'format': 'best[height<=720]/best',
-                'geo_bypass': True,
-                'geo_bypass_country': 'US',
-            }
-            
-            with yt_dlp.YoutubeDL(opts) as ydl:
+            with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
                 info = ydl.extract_info(url, download=False)
                 
                 return {
@@ -397,7 +312,7 @@ def index():
     """Главная страница"""
     return '''
     <h1>🤖 Telegram Video Bot</h1>
-    <p>Простая рабочая версия!</p>
+    <p>Рабочая версия бота!</p>
     <p>Статус: <span style="color: green;">Онлайн</span></p>
     '''
 
@@ -422,7 +337,7 @@ async def main():
         return
     
     # Создаем бота
-    bot_instance = SimpleVideoBot(token, webhook_url)
+    bot_instance = WorkingVideoBot(token, webhook_url)
     
     # Инициализируем приложение
     await bot_instance.application.initialize()
@@ -434,7 +349,7 @@ async def main():
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     
-    logger.info("🚀 Простой бот запущен на Render!")
+    logger.info("🚀 Рабочий бот запущен на Render!")
     
     # Держим приложение живым
     try:
