@@ -167,8 +167,30 @@ class RenderVideoBot:
             video_info = self.get_video_info(url)
             
             if not video_info:
-                await status_message.edit_text("❌ Не удалось получить информацию")
+                await status_message.edit_text(
+                    "❌ Не удалось получить информацию\n\n"
+                    "Возможные причины:\n"
+                    "• Региональные ограничения\n"
+                    "• Возрастные ограничения\n"
+                    "• Блокировка скачивания\n"
+                    "• Приватное видео\n\n"
+                    "Попробуйте другое видео"
+                )
                 return
+            
+            # Показываем информацию о видео
+            title = video_info.get('title', 'Неизвестно')
+            duration = video_info.get('duration', 0)
+            uploader = video_info.get('uploader', 'Неизвестный канал')
+            
+            duration_str = f"{duration//60}:{duration%60:02d}" if duration else "неизвестно"
+            
+            await status_message.edit_text(
+                f"📹 **{title}**\n"
+                f"📺 Канал: {uploader}\n"
+                f"⏱️ Длительность: {duration_str}\n\n"
+                f"🔄 Проверяю размер..."
+            )
             
             # Проверяем размер
             file_size = video_info.get('file_size', 0)
@@ -176,35 +198,78 @@ class RenderVideoBot:
                 size_mb = file_size / (1024*1024)
                 await status_message.edit_text(
                     f"❌ Файл слишком большой ({size_mb:.1f} МБ)\n"
-                    f"Максимум: {self.max_file_size/(1024*1024):.0f} МБ"
+                    f"Максимум: {self.max_file_size/(1024*1024):.0f} МБ\n\n"
+                    f"📹 **{title}**\n"
+                    f"📺 Канал: {uploader}"
                 )
                 return
             
             # Скачиваем
-            await status_message.edit_text("⬇️ Скачиваю...")
+            await status_message.edit_text(
+                f"⬇️ Скачиваю...\n\n"
+                f"📹 **{title}**\n"
+                f"📺 Канал: {uploader}\n"
+                f"⏱️ Длительность: {duration_str}"
+            )
             
             result = await self._download_video(url)
             
             if result and 'video' in result['files']:
                 await self._send_video(update, result, status_message)
             else:
-                await status_message.edit_text("❌ Ошибка скачивания")
+                await status_message.edit_text(
+                    f"❌ Ошибка скачивания\n\n"
+                    f"📹 **{title}**\n"
+                    f"📺 Канал: {uploader}\n\n"
+                    f"Возможно, видео защищено от скачивания"
+                )
                 
         except Exception as e:
             logger.error(f"Ошибка обработки: {e}")
-            await status_message.edit_text(f"❌ Ошибка: {str(e)}")
+            error_msg = str(e)
+            if "age-gated" in error_msg.lower():
+                await status_message.edit_text("❌ Видео имеет возрастные ограничения")
+            elif "private" in error_msg.lower():
+                await status_message.edit_text("❌ Видео приватное или удалено")
+            elif "region" in error_msg.lower():
+                await status_message.edit_text("❌ Видео недоступно в вашем регионе")
+            else:
+                await status_message.edit_text(f"❌ Ошибка: {error_msg[:100]}...")
     
     def get_video_info(self, url: str) -> Optional[Dict]:
         """Получение информации о видео"""
         try:
-            with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': False,
+                'skip_download': True,
+                'format': 'best[height<=720]/best',
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
+                
+                # Получаем размер файла более точно
+                formats = info.get('formats', [])
+                file_size = 0
+                
+                for fmt in formats:
+                    if fmt.get('height', 0) <= 720:
+                        file_size = fmt.get('filesize') or fmt.get('filesize_approx', 0)
+                        if file_size:
+                            break
+                
+                if not file_size:
+                    file_size = info.get('filesize', 0) or info.get('filesize_approx', 0)
                 
                 return {
                     'title': info.get('title', 'Неизвестно'),
                     'uploader': info.get('uploader', 'Неизвестный канал'),
                     'duration': info.get('duration', 0),
-                    'file_size': info.get('filesize', 0) or info.get('filesize_approx', 0)
+                    'file_size': file_size,
+                    'view_count': info.get('view_count', 0),
+                    'upload_date': info.get('upload_date', ''),
                 }
                 
         except Exception as e:
