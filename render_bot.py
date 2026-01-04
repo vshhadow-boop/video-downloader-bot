@@ -82,6 +82,7 @@ class RenderVideoBot:
         self.application.add_handler(CommandHandler("download", self.download_command))
         self.application.add_handler(CommandHandler("ping", self.ping_command))
         self.application.add_handler(CommandHandler("check", self.check_command))
+        self.application.add_handler(CommandHandler("status", self.status_command))
         
         # Обработка ссылок
         self.application.add_handler(
@@ -102,6 +103,7 @@ class RenderVideoBot:
 /help - справка
 /download <ссылка> - скачать видео
 /check <ссылка> - проверить видео
+/status - проверить YouTube
 /ping - проверка работы
 
 🚀 Просто отправь ссылку на видео!
@@ -118,6 +120,7 @@ class RenderVideoBot:
 • /help - эта справка
 • /download <ссылка> - скачать видео
 • /check <ссылка> - проверить видео (без скачивания)
+• /status - проверить доступность YouTube
 • /ping - проверка работы
 
 🔗 Поддерживаемые платформы:
@@ -146,6 +149,49 @@ class RenderVideoBot:
             f"📡 Сервер: Онлайн\n"
             f"⚡ Статус: Готов к работе"
         )
+    
+    async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /status - проверка доступности YouTube"""
+        status_message = await update.message.reply_text("🔍 Проверяю доступность YouTube...")
+        
+        try:
+            # Тестируем на популярном видео
+            test_url = "https://youtu.be/dQw4w9WgXcQ"  # Rick Roll - всегда доступно
+            
+            test_info = self.get_video_info(test_url)
+            
+            if test_info and 'error_type' not in test_info:
+                attempt = test_info.get('attempt', 1)
+                await status_message.edit_text(
+                    f"✅ **YouTube доступен**\n\n"
+                    f"🔄 Успешно с попытки: {attempt}\n"
+                    f"🌍 Сервер Render может скачивать\n"
+                    f"⚡ Статус: Готов к работе\n\n"
+                    f"💡 Можете пробовать скачивать видео!"
+                )
+            elif test_info and test_info.get('error_type') == 'rate_limited':
+                await status_message.edit_text(
+                    f"🚫 **YouTube блокирует Render**\n\n"
+                    f"❌ Ошибка 429: Слишком много запросов\n"
+                    f"⏰ Блокировка временная\n\n"
+                    f"💡 **Попробуйте:**\n"
+                    f"• Подождать 10-15 минут\n"
+                    f"• Использовать локальные программы"
+                )
+            else:
+                await status_message.edit_text(
+                    f"⚠️ **Проблемы с YouTube**\n\n"
+                    f"❌ Не удалось подключиться\n"
+                    f"🔧 Возможны технические работы\n\n"
+                    f"💡 Попробуйте позже"
+                )
+                
+        except Exception as e:
+            logger.error(f"Ошибка проверки статуса: {e}")
+            await status_message.edit_text(
+                f"❌ **Ошибка проверки**\n\n"
+                f"Детали: {str(e)[:100]}..."
+            )
     
     async def check_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /check - проверка видео без скачивания"""
@@ -296,7 +342,17 @@ class RenderVideoBot:
             if isinstance(video_info, dict) and 'error_type' in video_info:
                 error_type = video_info['error_type']
                 
-                if error_type == 'age_restricted':
+                if error_type == 'rate_limited':
+                    await status_message.edit_text(
+                        "🚫 **YouTube блокирует сервер Render**\n\n"
+                        "❌ Ошибка 429: Слишком много запросов\n"
+                        "🤖 Render использует общие IP-адреса\n\n"
+                        "💡 **Решения:**\n"
+                        "• Попробуйте через 10-15 минут\n"
+                        "• Используйте другой хостинг\n"
+                        "• Скачайте локально через программу"
+                    )
+                elif error_type == 'age_restricted':
                     await status_message.edit_text(
                         "🔞 **Видео имеет возрастные ограничения**\n\n"
                         "❌ YouTube требует авторизацию для просмотра\n"
@@ -447,67 +503,95 @@ class RenderVideoBot:
             return None
     
     def get_video_info(self, url: str) -> Optional[Dict]:
-        """Получение информации о видео"""
-        try:
-            # Основные настройки
-            ydl_opts = {
+        """Получение информации о видео с обходом блокировок"""
+        
+        # Список разных настроек для обхода блокировок
+        attempts = [
+            # Попытка 1: Базовые настройки
+            {
                 'quiet': True,
                 'no_warnings': True,
                 'extract_flat': False,
                 'skip_download': True,
                 'format': 'best[height<=720]/best',
-                'age_limit': 99,  # Игнорируем возрастные ограничения
-                'geo_bypass': True,  # Обход географических ограничений
+                'geo_bypass': True,
+                'geo_bypass_country': 'US',
+            },
+            # Попытка 2: С другой страной
+            {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': False,
+                'skip_download': True,
+                'format': 'worst[height<=480]/worst',
+                'geo_bypass': True,
+                'geo_bypass_country': 'GB',
+                'extractor_retries': 1,
+            },
+            # Попытка 3: Минимальные настройки
+            {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': True,  # Только базовая информация
+                'skip_download': True,
+                'geo_bypass': True,
             }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+        ]
+        
+        for i, opts in enumerate(attempts, 1):
+            try:
+                logger.info(f"Попытка {i} получения информации о видео")
                 
-                # Проверяем на возрастные ограничения
-                age_restricted = info.get('age_limit', 0) > 0
-                is_live = info.get('is_live', False)
-                was_live = info.get('was_live', False)
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    
+                    # Получаем размер файла
+                    formats = info.get('formats', [])
+                    file_size = 0
+                    
+                    for fmt in formats:
+                        if fmt.get('height', 0) <= 720:
+                            file_size = fmt.get('filesize') or fmt.get('filesize_approx', 0)
+                            if file_size:
+                                break
+                    
+                    if not file_size:
+                        file_size = info.get('filesize', 0) or info.get('filesize_approx', 0)
+                    
+                    logger.info(f"Успешно получена информация (попытка {i})")
+                    
+                    return {
+                        'title': info.get('title', 'Неизвестно'),
+                        'uploader': info.get('uploader', 'Неизвестный канал'),
+                        'duration': info.get('duration', 0),
+                        'file_size': file_size,
+                        'view_count': info.get('view_count', 0),
+                        'upload_date': info.get('upload_date', ''),
+                        'attempt': i
+                    }
+                    
+            except Exception as e:
+                error_msg = str(e).lower()
+                logger.warning(f"Попытка {i} не удалась: {e}")
                 
-                # Получаем размер файла более точно
-                formats = info.get('formats', [])
-                file_size = 0
+                # Анализируем ошибку
+                if '429' in error_msg or 'too many requests' in error_msg:
+                    logger.error("YouTube блокирует запросы (429)")
+                    if i < len(attempts):
+                        continue  # Пробуем следующий метод
+                    return {'error_type': 'rate_limited', 'error_msg': str(e)}
                 
-                for fmt in formats:
-                    if fmt.get('height', 0) <= 720:
-                        file_size = fmt.get('filesize') or fmt.get('filesize_approx', 0)
-                        if file_size:
-                            break
-                
-                if not file_size:
-                    file_size = info.get('filesize', 0) or info.get('filesize_approx', 0)
-                
-                return {
-                    'title': info.get('title', 'Неизвестно'),
-                    'uploader': info.get('uploader', 'Неизвестный канал'),
-                    'duration': info.get('duration', 0),
-                    'file_size': file_size,
-                    'view_count': info.get('view_count', 0),
-                    'upload_date': info.get('upload_date', ''),
-                    'age_restricted': age_restricted,
-                    'is_live': is_live,
-                    'was_live': was_live,
-                }
-                
-        except Exception as e:
-            error_msg = str(e).lower()
-            logger.error(f"Ошибка получения информации: {e}")
-            
-            # Анализируем ошибку
-            if any(keyword in error_msg for keyword in ['sign in', 'age', 'restricted', 'login']):
-                return {'error_type': 'age_restricted', 'error_msg': str(e)}
-            elif any(keyword in error_msg for keyword in ['live', 'stream', 'premiere']):
-                return {'error_type': 'live_content', 'error_msg': str(e)}
-            elif any(keyword in error_msg for keyword in ['private', 'unavailable', 'deleted']):
-                return {'error_type': 'unavailable', 'error_msg': str(e)}
-            elif any(keyword in error_msg for keyword in ['region', 'country', 'location']):
-                return {'error_type': 'geo_blocked', 'error_msg': str(e)}
-            
-            return None
+                elif any(keyword in error_msg for keyword in ['sign in', 'age', 'restricted', 'login']):
+                    return {'error_type': 'age_restricted', 'error_msg': str(e)}
+                elif any(keyword in error_msg for keyword in ['live', 'stream', 'premiere']):
+                    return {'error_type': 'live_content', 'error_msg': str(e)}
+                elif any(keyword in error_msg for keyword in ['private', 'unavailable', 'deleted']):
+                    return {'error_type': 'unavailable', 'error_msg': str(e)}
+                elif any(keyword in error_msg for keyword in ['region', 'country', 'location']):
+                    return {'error_type': 'geo_blocked', 'error_msg': str(e)}
+        
+        logger.error("Все попытки получения информации не удались")
+        return None
     
     async def _download_audio_only(self, url: str) -> Optional[Dict]:
         """Скачивание только аудио"""
