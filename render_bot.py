@@ -163,20 +163,33 @@ class RenderVideoBot:
         status_message = await update.message.reply_text("🔄 Обрабатываю...")
         
         try:
+            # Очищаем URL от параметров
+            clean_url = url.split('?')[0] if '?' in url else url
+            
             # Получаем информацию
-            video_info = self.get_video_info(url)
+            video_info = self.get_video_info(clean_url)
             
             if not video_info:
-                await status_message.edit_text(
-                    "❌ Не удалось получить информацию\n\n"
-                    "Возможные причины:\n"
-                    "• Региональные ограничения\n"
-                    "• Возрастные ограничения\n"
-                    "• Блокировка скачивания\n"
-                    "• Приватное видео\n\n"
-                    "Попробуйте другое видео"
-                )
-                return
+                # Пробуем альтернативные методы
+                await status_message.edit_text("🔄 Пробую альтернативный метод...")
+                
+                video_info = await self._try_alternative_extraction(clean_url)
+                
+                if not video_info:
+                    await status_message.edit_text(
+                        "❌ Не удалось получить информацию\n\n"
+                        "🔍 **Возможные причины:**\n"
+                        "• Региональные ограничения\n"
+                        "• Возрастные ограничения (18+)\n"
+                        "• Блокировка скачивания автором\n"
+                        "• Приватное/удаленное видео\n"
+                        "• Проблемы с сервером YouTube\n\n"
+                        "💡 **Попробуйте:**\n"
+                        "• Другое видео с того же канала\n"
+                        "• Видео без возрастных ограничений\n"
+                        "• Публичные видео"
+                    )
+                    return
             
             # Показываем информацию о видео
             title = video_info.get('title', 'Неизвестно')
@@ -212,17 +225,30 @@ class RenderVideoBot:
                 f"⏱️ Длительность: {duration_str}"
             )
             
-            result = await self._download_video(url)
+            result = await self._download_video(clean_url)
             
             if result and 'video' in result['files']:
                 await self._send_video(update, result, status_message)
             else:
+                # Пробуем скачать только аудио
                 await status_message.edit_text(
-                    f"❌ Ошибка скачивания\n\n"
-                    f"📹 **{title}**\n"
-                    f"📺 Канал: {uploader}\n\n"
-                    f"Возможно, видео защищено от скачивания"
+                    f"🎵 Пробую скачать только аудио...\n\n"
+                    f"� **{ti:tle}**\n"
+                    f"📺 Канал: {uploader}"
                 )
+                
+                audio_result = await self._download_audio_only(clean_url)
+                
+                if audio_result and 'audio' in audio_result['files']:
+                    await self._send_audio(update, audio_result, status_message)
+                else:
+                    await status_message.edit_text(
+                        f"❌ Не удалось скачать\n\n"
+                        f"📹 **{title}**\n"
+                        f"📺 Канал: {uploader}\n\n"
+                        f"🔒 **Видео защищено от скачивания**\n"
+                        f"Автор канала заблокировал загрузку"
+                    )
                 
         except Exception as e:
             logger.error(f"Ошибка обработки: {e}")
@@ -235,6 +261,36 @@ class RenderVideoBot:
                 await status_message.edit_text("❌ Видео недоступно в вашем регионе")
             else:
                 await status_message.edit_text(f"❌ Ошибка: {error_msg[:100]}...")
+    
+    async def _try_alternative_extraction(self, url: str) -> Optional[Dict]:
+        """Альтернативный метод извлечения информации"""
+        try:
+            # Пробуем с другими настройками
+            alt_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': False,
+                'skip_download': True,
+                'format': 'worst[height<=480]/worst',  # Пробуем худшее качество
+                'age_limit': 99,  # Игнорируем возрастные ограничения
+                'geo_bypass': True,  # Обход географических ограничений
+            }
+            
+            with yt_dlp.YoutubeDL(alt_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                
+                return {
+                    'title': info.get('title', 'Неизвестно'),
+                    'uploader': info.get('uploader', 'Неизвестный канал'),
+                    'duration': info.get('duration', 0),
+                    'file_size': 0,  # Размер неизвестен
+                    'view_count': info.get('view_count', 0),
+                    'upload_date': info.get('upload_date', ''),
+                }
+                
+        except Exception as e:
+            logger.error(f"Альтернативное извлечение не удалось: {e}")
+            return None
     
     def get_video_info(self, url: str) -> Optional[Dict]:
         """Получение информации о видео"""
@@ -275,6 +331,77 @@ class RenderVideoBot:
         except Exception as e:
             logger.error(f"Ошибка получения информации: {e}")
             return None
+    
+    async def _download_audio_only(self, url: str) -> Optional[Dict]:
+        """Скачивание только аудио"""
+        try:
+            audio_opts = {
+                'outtmpl': str(self.temp_dir / '%(title)s.%(ext)s'),
+                'format': 'bestaudio/best',
+                'writeinfojson': False,
+                'writethumbnail': False,
+                'writesubtitles': False,
+                'writeautomaticsub': False,
+                'ignoreerrors': True,
+                'no_warnings': True,
+                'extractflat': False,
+                'noplaylist': True,
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+            }
+            
+            with yt_dlp.YoutubeDL(audio_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                title = info.get('title', 'audio')
+                
+                # Скачиваем
+                ydl.download([url])
+                
+                # Ищем аудио файл
+                for ext in ['.mp3', '.m4a', '.webm', '.ogg']:
+                    audio_file = self.temp_dir / f"{title}{ext}"
+                    if audio_file.exists():
+                        return {
+                            'title': title,
+                            'info': info,
+                            'files': {'audio': str(audio_file)}
+                        }
+                
+                return None
+                
+        except Exception as e:
+            logger.error(f"Ошибка скачивания аудио: {e}")
+            return None
+    
+    async def _send_audio(self, update: Update, result: Dict, status_message):
+        """Отправка аудио"""
+        try:
+            await status_message.edit_text("📤 Отправляю аудио...")
+            
+            audio_path = result['files']['audio']
+            title = result['title']
+            
+            with open(audio_path, 'rb') as audio_file:
+                await update.message.reply_audio(
+                    audio=audio_file,
+                    caption=f"🎵 {title}",
+                    title=title
+                )
+            
+            await status_message.delete()
+            
+            # Очищаем файл
+            try:
+                Path(audio_path).unlink()
+            except:
+                pass
+                
+        except Exception as e:
+            logger.error(f"Ошибка отправки аудио: {e}")
+            await status_message.edit_text(f"❌ Ошибка отправки аудио: {str(e)}")
     
     async def _download_video(self, url: str) -> Optional[Dict]:
         """Скачивание видео"""
